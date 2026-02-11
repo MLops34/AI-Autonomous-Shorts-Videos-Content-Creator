@@ -1,0 +1,19 @@
+# Core video generation
+moviepy>=1.0.3                  # Video editing: images + audio → MP4
+
+# Free/local TTS (Microsoft Edge voices, no API key needed)
+edge-tts>=6.1.12
+
+# Config & structured data handling
+pyyaml>=6.0                     # Read settings.yaml and prompts
+pydantic>=2.5.0                 # Parse LLM JSON outputs safely (script sections)
+
+# HTTP client for OpenRouter / DeepSeek
+requests>=2.31.0
+
+# Nice-to-have utilities
+tqdm>=4.66.1                    # Progress bars during rendering/TTS
+pillow>=10.0.0                  # Image handling (MoviePy already depends on it, but explicit)
+
+# Optional / debugging
+python-dotenv>=1.0.0            # If you want to use .env later for model names etc.
