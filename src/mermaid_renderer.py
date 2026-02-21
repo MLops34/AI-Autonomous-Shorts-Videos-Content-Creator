@@ -1,11 +1,47 @@
 # src/mermaid_renderer.py
 """Render Mermaid diagrams to PNG with robust Windows support."""
 
+import re
 import subprocess
 import os
 import platform
 from pathlib import Path
 from typing import List, Optional
+
+# Diagram types Mermaid CLI accepts (first word of the diagram declaration)
+MERMAID_DIAGRAM_STARTS = (
+    "graph",
+    "flowchart",
+    "sequenceDiagram",
+    "classDiagram",
+    "stateDiagram",
+    "erDiagram",
+    "journey",
+    "gantt",
+    "pie",
+    "mindmap",
+    "timeline",
+    "blockDiagram",
+    "quadrantChart",
+)
+
+
+def ensure_mermaid_has_diagram_type(code: str) -> str:
+    """
+    Ensure the Mermaid code has a valid diagram type so mmdc does not raise
+    UnknownDiagramError. If the code is empty or has no detected type, return
+    a minimal valid graph so the section still renders.
+    """
+    code = code.strip()
+    if not code:
+        return "graph TD\n    A[Section]"
+    first_line = code.split("\n")[0].strip()
+    first_word = (first_line.split() or [""])[0].lower()
+    if first_word in MERMAID_DIAGRAM_STARTS:
+        return code
+    # No valid type: use a minimal graph (LLM may have returned explanation text)
+    safe = re.sub(r"[\[\]]", " ", code[:60]).strip() or "Section"
+    return f"graph TD\n    A[{safe}]"
 
 
 def find_mmdc() -> Optional[str]:
@@ -133,13 +169,32 @@ def render_all_mmd_to_png(
         except subprocess.TimeoutExpired:
             print(f"[Timeout] {mmd_path.name}")
         except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "")[:300]
             print(f"[mmdc failed] {mmd_path.name}")
-            print(f"   Error: {e.stderr[:200] if e.stderr else 'Unknown'}")
-            
-            # Create placeholder on failure
-            _create_placeholder(png_path, mmd_path.stem)
-            if png_path.exists():
-                created.append(png_path)
+            print(f"   Error: {stderr or 'Unknown'}")
+            # Retry once after fixing "No diagram type detected"
+            if "UnknownDiagramError" in stderr or "No diagram type" in stderr or "detectType" in stderr:
+                try:
+                    raw = mmd_path.read_text(encoding="utf-8")
+                    fixed = ensure_mermaid_has_diagram_type(raw)
+                    mmd_path.write_text(fixed, encoding="utf-8")
+                    result = subprocess.run(
+                        cmd,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        shell=use_shell,
+                        timeout=30,
+                    )
+                    if png_path.exists():
+                        created.append(png_path)
+                        print(f"Rendered (after fix) → {png_path}")
+                except Exception:
+                    pass
+            if png_path not in created and not png_path.exists():
+                _create_placeholder(png_path, mmd_path.stem)
+                if png_path.exists():
+                    created.append(png_path)
     
     return created
 

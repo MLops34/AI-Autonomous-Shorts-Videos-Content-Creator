@@ -30,10 +30,11 @@ async def generate_section_audios(
     created = []
 
     for i, section in enumerate(sections, 1):
-        text = section["text"].strip()
+        text = section.get("text", section.get("narration", "")).strip()
         if not text:
             continue
-        outfile = output_folder / f"section_{i}.mp3"
+        # Zero-padded to match Mermaid image naming (section_01.png, section_01.mp3)
+        outfile = output_folder / f"section_{i:02d}.mp3"
         tasks.append(generate_one_audio(text, outfile, voice))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -42,6 +43,6 @@ async def generate_section_audios(
         if isinstance(result, Exception):
             print(f"Section {i} failed: {result}")
         else:
-            created.append(output_folder / f"section_{i}.mp3")
+            created.append(output_folder / f"section_{i:02d}.mp3")
 
     return created

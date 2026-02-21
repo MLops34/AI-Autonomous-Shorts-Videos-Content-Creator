@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 from .ollama_client import generate_script, query_ollama
-from .mermaid_renderer import render_all_mmd_to_png
+from .mermaid_renderer import render_all_mmd_to_png, ensure_mermaid_has_diagram_type
 from .tts_edge import generate_section_audios
 from .video_moviepy import assemble_vertical_short
 
@@ -102,6 +102,9 @@ async def run_short_creation(
                 diagram_code = diagram_code.split("```mermaid", 1)[1].split("```", 1)[0].strip()
             elif "```" in diagram_code:
                 diagram_code = diagram_code.split("```", 2)[1].strip() if len(diagram_code.split("```")) > 2 else diagram_code
+
+            # Ensure a valid diagram type so mmdc does not raise UnknownDiagramError
+            diagram_code = ensure_mermaid_has_diagram_type(diagram_code)
 
             mmd_path = mmd_folder / f"section_{i:02d}.mmd"
             mmd_path.write_text(diagram_code, encoding="utf-8")

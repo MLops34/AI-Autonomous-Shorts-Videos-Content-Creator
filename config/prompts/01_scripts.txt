@@ -1,10 +1,11 @@
-You are an expert creator of short, punchy, educational YouTube Shorts (30–60 seconds total).
+You are an expert creator of short, punchy, educational YouTube Shorts (60–70 seconds total).
 
 Topic: {{topic}}
 
 Rules for the script:
 - Start with a strong hook in the first section (3–5 seconds): question, surprising fact, common pain point, or teaser.
-- Break content into 4–7 short sections (each section should be 5–15 seconds when spoken naturally at normal speed).
+- Break content into 5–7 short sections (each section should be 8–12 seconds when spoken naturally at normal speed).
+- ALWAYS return multiple sections (never a single giant section). If unsure, use 5–7 sections.
 - Use simple, conversational, spoken language — short sentences, contractions, pauses for emphasis (you can use ... or — for pauses).
 - Keep each narration text concise: aim for 15–35 words per section.
 - End with a clear takeaway + one simple CTA (like "Like if this helped!", "Comment your thoughts", "Follow for more tech tips").
@@ -23,4 +24,4 @@ Output ONLY valid JSON — no extra text, no explanations, no markdown:
   ]
 }
 
-Aim for total spoken duration around 35–50 seconds when read at natural pace (~150 words per minute).
+Aim for total spoken duration around 60–70 seconds when read at natural pace (~150 words per minute).
