@@ -6,6 +6,16 @@ from typing import Optional, List, Dict
 
 import numpy as np
 
+# Pillow 10+ removed Image.ANTIALIAS which MoviePy still references.
+# Provide a backward-compatible alias so resize/on_color keep working.
+try:  # pragma: no cover - environment dependent
+    from PIL import Image as _PILImage  # type: ignore[import-not-found]
+
+    if not hasattr(_PILImage, "ANTIALIAS") and hasattr(_PILImage, "Resampling"):
+        _PILImage.ANTIALIAS = _PILImage.Resampling.LANCZOS  # type: ignore[attr-defined]
+except Exception:
+    _PILImage = None  # type: ignore[assignment]
+
 # Explicit imports - no wildcard, no linter warnings
 # `moviepy` is an external dependency provided via requirements.txt
 from moviepy.editor import (  # type: ignore[import-not-found]
