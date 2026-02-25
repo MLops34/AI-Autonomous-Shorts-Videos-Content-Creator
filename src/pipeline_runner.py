@@ -10,6 +10,7 @@ from .ollama_client import generate_script, query_ollama
 from .mermaid_renderer import render_all_mmd_to_png, ensure_mermaid_has_diagram_type
 from .tts_edge import generate_section_audios
 from .video_moviepy import assemble_vertical_short
+from .video_manim import assemble_with_manim
 
 
 # In your pipeline_runner.py, before calling render_all_mmd_to_png:
@@ -124,8 +125,8 @@ async def run_short_creation(
             voice="en-US-GuyNeural"  # ← read from config/settings.yaml later
         )
 
-        # ── 5. Assemble final video ──────────────────────────────────────
-        logger.info("Assembling final vertical short...")
+        # ── 5. Assemble final video(s) ───────────────────────────────────
+        logger.info("Assembling final vertical short with MoviePy...")
         video_folder = out_dir / "videos"
         video_folder.mkdir(exist_ok=True)
         final_video_path = video_folder / f"{topic_slug}_short.mp4"
@@ -137,8 +138,21 @@ async def run_short_creation(
             sections=script_data["sections"],  # for timing / text overlays later
         )
 
+        logger.info("MoviePy short completed: %s", final_video_path)
+
+        # ── 6. Optional: assemble animated short with Manim ──────────────
+        try:
+            logger.info("Assembling animated vertical short with Manim...")
+            manim_result = assemble_with_manim(out_dir)
+            if manim_result:
+                logger.info("Manim short completed: %s", manim_result)
+            else:
+                logger.warning("Manim assembly returned no video (see logs above).")
+        except Exception as manim_err:
+            logger.warning("Manim assembly skipped or failed: %s", manim_err)
+
         logger.info("Pipeline completed successfully!")
-        logger.info("Final video: %s", final_video_path)
+        logger.info("Final MoviePy video: %s", final_video_path)
 
     except Exception as e:
         logger.exception("Pipeline failed: %s", str(e))
