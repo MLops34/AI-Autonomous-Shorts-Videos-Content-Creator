@@ -72,6 +72,7 @@ def generate_script(
     """Generate structured script (title + list of sections)."""
     prompt = script_prompt_template.replace("{{topic}}", topic.strip())
     raw = query_ollama(prompt, model=model)
+    
 
     if not raw:
         return None
