@@ -87,11 +87,13 @@ async def run_short_creation(
         for i, section in enumerate(script_data["sections"], 1):
             heading = section.get("heading", "")
             text = section.get("text", section.get("narration", ""))  # flexible key names
+            duration_sec = section.get("duration_sec", 10.0)  # default 10s if not provided
 
             prompt = (
                 mermaid_tmpl.replace("{{heading}}", heading)
                 .replace("{{text}}", text)
                 .replace("{{NARRATION}}", text)  # support both styles
+                .replace("{{duration_sec}}", str(duration_sec))
             )
 
             logger.info("Generating diagram for section %d: %s...", i, heading[:60])
@@ -143,7 +145,16 @@ async def run_short_creation(
         # ── 6. Optional: assemble animated short with Manim ──────────────
         try:
             logger.info("Assembling animated vertical short with Manim...")
-            manim_result = assemble_with_manim(out_dir)
+            # Pass timing configuration from settings
+            manim_result = assemble_with_manim(
+                out_dir,
+                title_reveal_ratio=0.12,
+                content_reveal_ratio=0.25,
+                hold_ratio=0.50,
+                exit_ratio=0.13,
+                min_step_time=0.4,
+                max_step_time=1.2,
+            )
             if manim_result:
                 logger.info("Manim short completed: %s", manim_result)
             else:
