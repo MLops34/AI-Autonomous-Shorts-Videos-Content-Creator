@@ -35,23 +35,29 @@ try:
         FadeOut,
         VGroup,
         Rectangle,
+        RoundedRectangle,
         Arrow,
         Text,
         Create,
+        GrowFromCenter,
+        GrowArrow,
         DOWN,
         UP,
         ORIGIN,
+        WHITE,
         config,
         tempconfig,
     )
+    from manim.utils.rate_functions import smooth, ease_out_sine, ease_in_out_sine  # type: ignore[import-not-found]
 except ImportError as e:  # pragma: no cover - runtime environment dependent
     Scene = object  # type: ignore[assignment]
     ImageMobject = object  # type: ignore[assignment]
     FadeIn = FadeOut = None  # type: ignore[assignment]
-    VGroup = Rectangle = Arrow = Text = Create = object  # type: ignore[assignment]
-    DOWN = UP = ORIGIN = None  # type: ignore[assignment]
+    VGroup = Rectangle = RoundedRectangle = Arrow = Text = Create = GrowFromCenter = GrowArrow = object  # type: ignore[assignment]
+    DOWN = UP = ORIGIN = WHITE = None  # type: ignore[assignment]
     config = None  # type: ignore[assignment]
     tempconfig = None  # type: ignore[assignment]
+    smooth = ease_out_sine = ease_in_out_sine = None  # type: ignore[assignment]
     _MANIM_IMPORT_ERROR = e
 else:
     _MANIM_IMPORT_ERROR = None
@@ -86,16 +92,12 @@ def _load_sections(script_path: Path) -> List[Dict]:
 def _parse_mermaid_graph(mmd_path: Path) -> Optional[Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]]:
     """Parse a simple Mermaid graph (graph TD/LR) into nodes and edges.
 
-    Supports lines like:
+    Supports:
         graph TD
             A[Start] --> B[Next]
             B --> C[End]
-
-    Returns:
-        (nodes, edges) where:
-          nodes = [(id, label), ...]
-          edges = [(src_id, dst_id), ...]
-        or None if parsing fails or type unsupported.
+            A --> B --> C  (chained arrows)
+        Ignores classDiagram, subgraph, etc.
     """
     if not mmd_path.exists():
         return None
@@ -112,37 +114,71 @@ def _parse_mermaid_graph(mmd_path: Path) -> Optional[Tuple[List[Tuple[str, str]]
     node_labels: Dict[str, str] = {}
     edges: List[Tuple[str, str]] = []
 
-    # Pattern: ID[Label] --> ID[Label]
-    edge_re = re.compile(
-        r"^([A-Za-z0-9_]+)\s*(\[[^\]]+\]|\([^)]+\)|\{[^}]+\})?\s*-->\s*([A-Za-z0-9_]+)\s*(\[[^\]]+\]|\([^)]+\)|\{[^}]+\})?\s*$"
-    )
-
     def _clean_label(raw_label: Optional[str], fallback: str) -> str:
         if not raw_label:
             return fallback
-        # Strip surrounding brackets/parentheses/braces
         txt = raw_label.strip()
-        if (txt[0], txt[-1]) in {("[", "]"), ("(", ")"), ("{", "}")}:
+        if len(txt) >= 2 and (txt[0], txt[-1]) in {("[", "]"), ("(", ")"), ("{", "}")}:
             txt = txt[1:-1]
-        return txt.strip() or fallback
+        txt = txt.strip().replace("\n", " ").strip() or fallback
+        return txt[:80] if len(txt) > 80 else txt
+
+    # Match node id and optional label: ID, ID[Label], ID(Label), ID{Label}
+    node_re = re.compile(
+        r"([A-Za-z0-9_]+)\s*(?:\[([^\]]*)\]|\(([^)]*)\)|\{([^}]*)\})?"
+    )
+
+    def _extract_node(m: "re.Match") -> Tuple[str, str]:
+        nid = m.group(1)
+        label = m.group(2) or m.group(3) or m.group(4)
+        return nid, _clean_label(label, nid)
+
+    # Match edge: ID[opt] --> ID[opt] or chained ID --> ID --> ID
+    edge_part_re = re.compile(
+        r"([A-Za-z0-9_]+)\s*(?:\[[^\]]*\]|\([^)]*\)|\{[^}]*\})?\s*-->\s*"
+    )
 
     for line in lines[1:]:
-        m = edge_re.match(line)
-        if not m:
+        # Skip non-graph lines (classDiagram, subgraph, etc.)
+        if "classDiagram" in line.lower() or "subgraph" in line.lower():
             continue
-        src_id, src_lbl_raw, dst_id, dst_lbl_raw = m.group(1), m.group(2), m.group(3), m.group(4)
-        src_label = _clean_label(src_lbl_raw, src_id)
-        dst_label = _clean_label(dst_lbl_raw, dst_id)
-        if src_id not in node_labels:
-            node_labels[src_id] = src_label
-        if dst_id not in node_labels:
-            node_labels[dst_id] = dst_label
-        edges.append((src_id, dst_id))
+        # Split by arrow to handle chains: A --> B --> C
+        parts = re.split(r"\s*-->\s*", line)
+        if len(parts) < 2:
+            continue
+        for i in range(len(parts) - 1):
+            src_part = parts[i].strip()
+            dst_part = parts[i + 1].strip()
+            m_src = node_re.match(src_part)
+            m_dst = node_re.match(dst_part)
+            if m_src and m_dst:
+                src_id, src_label = _extract_node(m_src)
+                dst_id, dst_label = _extract_node(m_dst)
+                if src_id not in node_labels:
+                    node_labels[src_id] = src_label
+                if dst_id not in node_labels:
+                    node_labels[dst_id] = dst_label
+                if src_id != dst_id:
+                    edges.append((src_id, dst_id))
 
     if not node_labels:
         return None
 
-    nodes = [(nid, node_labels[nid]) for nid in node_labels.keys()]
+    # Build node list in appearance order (topological-ish for flow)
+    seen: set = set()
+    ordered: List[str] = []
+    for src, dst in edges:
+        if src not in seen:
+            seen.add(src)
+            ordered.append(src)
+        if dst not in seen:
+            seen.add(dst)
+            ordered.append(dst)
+    for nid in node_labels:
+        if nid not in seen:
+            ordered.append(nid)
+
+    nodes = [(nid, node_labels[nid]) for nid in ordered]
     return nodes, edges
 
 
@@ -150,53 +186,75 @@ def _build_section_scene_class(
     image_path: Path,
     duration: float,
     background_color: Tuple[float, float, float] = (0.07, 0.07, 0.15),
+    section_heading: str = "",
+    # Timing ratios from settings.yaml
+    title_reveal_ratio: float = 0.12,
+    content_reveal_ratio: float = 0.25,
+    hold_ratio: float = 0.50,
+    exit_ratio: float = 0.13,
 ) -> type:
-    """Dynamically build a simple Manim Scene class for one static PNG.
-
-    The animation is:
-    - Fade in the diagram.
-    - Hold while narration plays.
-    - Fade out before the next section.
+    """Build a Manim Scene for PNG: title, diagram with Ken Burns, smooth fade out.
+    
+    CRITICAL: Total animation time MUST equal audio duration exactly.
     """
     _require_manim()
 
-    fade = min(0.5, max(0.2, duration * 0.15))
-    # Split remaining time into two beats for simple "flow" animation
-    remaining = max(0.0, duration - 2 * fade)
-    beat1 = remaining * 0.5
-    beat2 = remaining - beat1
+    # Calculate timing phases that sum EXACTLY to duration
+    title_fade_time = min(0.5, max(0.25, duration * 0.08))
+    diagram_reveal_time = min(0.8, max(0.4, duration * 0.15))
+    fade_out_time = min(0.8, max(0.3, duration * 0.12))
+    
+    # Hold time is whatever is left after reveals and exit
+    hold_time = max(0.1, duration - title_fade_time - diagram_reveal_time - fade_out_time)
+    
+    # Verify total
+    total = title_fade_time + diagram_reveal_time + hold_time + fade_out_time
+    if abs(total - duration) > 0.1:
+        # Adjust hold time to match duration exactly
+        hold_time = duration - title_fade_time - diagram_reveal_time - fade_out_time
+        hold_time = max(0.05, hold_time)
+    
+    heading = (section_heading or "Section").strip()[:60]
 
     class SectionScene(Scene):  # type: ignore[misc]
         def construct(self) -> None:  # type: ignore[override]
-            # Background
             try:
                 self.camera.background_color = background_color  # type: ignore[attr-defined]
             except Exception:
                 pass
 
+            # Title fades in
+            title = Text(heading, font_size=44, color=WHITE).to_edge(UP, buff=0.35)
+            self.play(FadeIn(title), run_time=title_fade_time, rate_func=ease_out_sine)
+
+            # Diagram reveals
             diagram = ImageMobject(str(image_path))
-            # Fit nicely for a 9:16 vertical frame
-            diagram.set_height(6)
+            diagram.set_height(5.2)
+            diagram.next_to(title, DOWN, buff=0.3)
+            self.play(
+                GrowFromCenter(diagram),
+                run_time=diagram_reveal_time,
+                rate_func=ease_out_sine,
+            )
 
-            # 1) Fade diagram in (like elements appearing)
-            self.play(FadeIn(diagram), run_time=fade)
-
-            # 2) Gentle "flow" motion: small zoom + shift to mimic arrows/boxes progressing
-            if beat1 > 0:
+            # Hold with subtle Ken Burns (only if enough time)
+            if hold_time > 0.3:
+                pan = (0.2, 0.15, 0.0)
                 self.play(
-                    diagram.animate.scale(1.05).shift(0.3 * UP),
-                    run_time=beat1,
+                    diagram.animate.scale(1.08).shift(pan),
+                    run_time=hold_time,
+                    rate_func=smooth,
                 )
+            elif hold_time > 0:
+                self.wait(hold_time)
 
-            # 3) Second beat: slight pan the other way (gives a feeling of flow across nodes)
-            if beat2 > 0:
-                self.play(
-                    diagram.animate.shift(0.6 * DOWN),
-                    run_time=beat2,
-                )
-
-            # 4) Fade out to transition to the next section
-            self.play(FadeOut(diagram), run_time=fade)
+            # Exit: fade out diagram and title together
+            self.play(
+                FadeOut(diagram),
+                FadeOut(title),
+                run_time=fade_out_time,
+                rate_func=ease_in_out_sine,
+            )
 
     return SectionScene
 
@@ -206,91 +264,162 @@ def _build_graph_scene_class(
     edges: List[Tuple[str, str]],
     duration: float,
     background_color: Tuple[float, float, float] = (0.07, 0.07, 0.15),
+    section_heading: str = "",
+    # Timing configuration from settings.yaml
+    title_reveal_ratio: float = 0.12,
+    content_reveal_ratio: float = 0.25,
+    hold_ratio: float = 0.50,
+    exit_ratio: float = 0.13,
+    min_step_time: float = 0.3,
+    max_step_time: float = 0.8,
 ) -> type:
-    """Build a Manim Scene that draws a simple flowchart node-by-node and edge-by-edge.
-
-    Animation:
-      - First node fades in.
-      - For each edge: draw arrow, then reveal destination node (if not yet visible).
-      - Finally fade everything out.
+    """Build a Manim Scene: section title, bold node boxes, clear arrows, smooth transitions.
+    
+    CRITICAL: Total animation time MUST equal audio duration exactly.
+    Animation sequence: title reveal → node/arrow builds → hold → fade out
     """
     _require_manim()
 
-    fade = min(0.8, max(0.3, duration * 0.15))
-    steps = max(1, len(edges) + 1)  # first node + one step per edge
-    remaining = max(0.0, duration - fade)
-    step_time = remaining / steps if steps > 0 else remaining
+    # Fixed timing for title and exit (these don't depend on node count)
+    title_fade_time = min(0.4, max(0.2, duration * 0.06))
+    fade_out_time = min(0.6, max(0.25, duration * 0.1))
+    
+    # Calculate available time for node/arrow animations
+    available_for_build = duration - title_fade_time - fade_out_time
+    
+    # Calculate per-element timing based on number of animated elements
+    num_nodes = len(nodes)
+    num_edges = len(edges)
+    total_elements = num_nodes + num_edges
+    
+    if total_elements == 0:
+        build_time = 0
+        hold_time = available_for_build
+    else:
+        # Each element gets fair share, but clamped to min/max
+        per_element_time = available_for_build / total_elements
+        per_element_time = max(min_step_time, min(max_step_time, per_element_time))
+        
+        # Recalculate build time with clamped per-element time
+        build_time = per_element_time * total_elements
+        hold_time = available_for_build - build_time
+        hold_time = max(0.05, hold_time)  # At least a tiny hold
+    
+    heading = (section_heading or "Section").strip()[:60]
 
     class GraphScene(Scene):  # type: ignore[misc]
         def construct(self) -> None:  # type: ignore[override]
-            # Background
             try:
                 self.camera.background_color = background_color  # type: ignore[attr-defined]
             except Exception:
                 pass
 
-            # Build node boxes with labels inside the rectangles
+            # Title fades in (not instant)
+            title = Text(heading, font_size=42, color=WHITE).to_edge(UP, buff=0.35)
+            self.play(FadeIn(title), run_time=title_fade_time, rate_func=ease_out_sine)
+
+            # Node boxes: bold stroke, visible fill so boxes are unmistakable
             node_groups: Dict[str, VGroup] = {}
             node_mobs: List[VGroup] = []
+            max_label_len = max(len(label) for _, label in nodes) if nodes else 10
+            box_width = min(5.8, max(4.2, 3.5 + max_label_len * 0.07))
+            box_height = 1.35
+
             for node_id, label in nodes:
-                # Older Manim versions don't support corner_radius on Rectangle
-                box = Rectangle(width=5.0, height=1.2)
-                # Slightly larger font so labels stay readable on portrait video
-                text = Text(label, font_size=40, line_spacing=0.8)
+                box = RoundedRectangle(
+                    width=box_width,
+                    height=box_height,
+                    corner_radius=0.3,
+                )
+                box.set_fill(color=WHITE, opacity=0.3)
+                box.set_stroke(color=WHITE, width=5)
+                text = Text(label, font_size=34, line_spacing=0.9, color=WHITE)
+                if text.width > box_width - 0.5:
+                    text.scale_to_fit_width(box_width - 0.5)
                 text.move_to(box.get_center())
                 group = VGroup(box, text)
                 node_groups[node_id] = group
                 node_mobs.append(group)
 
             if not node_mobs:
+                self.play(FadeOut(title), run_time=fade_out_time)
                 return
 
-            # Arrange nodes vertically to suggest flow
-            flow = VGroup(*node_mobs).arrange(DOWN, buff=0.6).move_to(ORIGIN)
-            # Keep the whole flowchart comfortably inside the portrait frame
-            max_flow_height = 6.5
+            flow = VGroup(*node_mobs).arrange(DOWN, buff=0.55)
+            flow.next_to(title, DOWN, buff=0.4)
+            max_flow_height = 5.4
             if flow.height > max_flow_height:
                 flow.scale(max_flow_height / flow.height)
+                flow.next_to(title, DOWN, buff=0.4)
 
-            # Initially hide all nodes
+            # Add flow so nodes are positioned; hide all initially
             for g in flow:
                 g.set_opacity(0.0)
+            self.add(flow)
 
             visible_nodes = set()
             arrows: List[Arrow] = []
 
-            # 1) Show first node
-            first_group = node_groups[nodes[0][0]]
-            self.play(FadeIn(first_group), run_time=step_time * 0.7)
-            visible_nodes.add(nodes[0][0])
+            # Calculate per-element animation time
+            element_time = per_element_time if total_elements > 0 else 0.5
 
-            # 2) Edges: draw arrow, then reveal destination node
+            # First node: grow in
+            if nodes:
+                first_group = node_groups[nodes[0][0]]
+                first_group.set_opacity(1.0)
+                self.play(
+                    GrowFromCenter(first_group),
+                    run_time=element_time,
+                    rate_func=ease_out_sine,
+                )
+                visible_nodes.add(nodes[0][0])
+
+            # Animate edges and subsequent nodes
             for src_id, dst_id in edges:
+                if src_id == dst_id:
+                    continue
                 if src_id not in node_groups or dst_id not in node_groups:
                     continue
                 src = node_groups[src_id]
                 dst = node_groups[dst_id]
+
                 arrow = Arrow(
                     src.get_bottom(),
                     dst.get_top(),
-                    buff=0.12,
+                    buff=0.2,
                 )
+                arrow.set_color(WHITE)
+                arrow.set_stroke(color=WHITE, width=6)
                 arrows.append(arrow)
-                # Draw arrow
-                self.play(Create(arrow), run_time=step_time * 0.6)
-                # Reveal destination node if not yet visible
+
+                # Arrow grows
+                self.play(
+                    GrowArrow(arrow),
+                    run_time=element_time * 0.6,
+                    rate_func=smooth,
+                )
+
+                # Destination node fades in
                 if dst_id not in visible_nodes:
-                    self.play(FadeIn(dst), run_time=step_time * 0.4)
+                    self.play(
+                        FadeIn(dst),
+                        run_time=element_time * 0.4,
+                        rate_func=ease_out_sine,
+                    )
                     visible_nodes.add(dst_id)
 
-            # 3) Hold briefly if we have spare time
-            leftover = max(0.0, duration - fade - steps * step_time)
-            if leftover > 0:
-                self.wait(leftover)
+            # Hold before exit
+            if hold_time > 0:
+                self.wait(hold_time)
 
-            # 4) Fade everything out
-            all_mobs = VGroup(flow, *arrows)
-            self.play(FadeOut(all_mobs), run_time=fade)
+            # Exit: fade everything together
+            all_content = VGroup(flow, *arrows)
+            self.play(
+                FadeOut(all_content),
+                FadeOut(title),
+                run_time=fade_out_time,
+                rate_func=ease_in_out_sine,
+            )
 
     return GraphScene
 
@@ -304,35 +433,64 @@ def _render_section_with_manim(
     background_color: Tuple[int, int, int] = (18, 18, 38),
     section_index: int = 1,
     mmd_path: Optional[Path] = None,
+    section_heading: str = "",
+    # Timing configuration
+    title_reveal_ratio: float = 0.12,
+    content_reveal_ratio: float = 0.25,
+    hold_ratio: float = 0.50,
+    exit_ratio: float = 0.13,
+    min_step_time: float = 0.4,
+    max_step_time: float = 1.2,
 ) -> Path:
     """Render a single section video using Manim and return the resulting mp4 path."""
     _require_manim()
 
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Manim expects colors in 0–1 floats; convert template color.
     bg_float = tuple(c / 255.0 for c in background_color)
+    heading = section_heading or f"Section {section_index}"
 
-    # Prefer graph-based animation when we can parse the Mermaid spec
     scene_cls: type
     parsed_graph: Optional[Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]] = None
     if mmd_path is not None and mmd_path.exists():
         parsed_graph = _parse_mermaid_graph(mmd_path)
 
-    if parsed_graph is not None:
+    # Use graph only when we have a proper flowchart (2+ nodes, 1+ edge)
+    use_graph = (
+        parsed_graph is not None
+        and len(parsed_graph[0]) >= 2
+        and len(parsed_graph[1]) >= 1
+    )
+
+    if use_graph:
         nodes, edges = parsed_graph
         scene_cls = _build_graph_scene_class(
             nodes=nodes,
             edges=edges,
             duration=duration,
             background_color=bg_float,  # type: ignore[arg-type]
+            section_heading=heading,
+            title_reveal_ratio=title_reveal_ratio,
+            content_reveal_ratio=content_reveal_ratio,
+            hold_ratio=hold_ratio,
+            exit_ratio=exit_ratio,
+            min_step_time=min_step_time,
+            max_step_time=max_step_time,
         )
-    else:
-        # Fallback: animate the static PNG like before
+    elif image_path.exists():
         scene_cls = _build_section_scene_class(
             image_path=image_path,
             duration=duration,
             background_color=bg_float,  # type: ignore[arg-type]
+            section_heading=heading,
+            title_reveal_ratio=title_reveal_ratio,
+            content_reveal_ratio=content_reveal_ratio,
+            hold_ratio=hold_ratio,
+            exit_ratio=exit_ratio,
+        )
+    else:
+        raise FileNotFoundError(
+            f"Section {section_index}: need a parseable graph (2+ nodes, 1+ edge) or images/{image_path.name}. "
+            "Run the pipeline with Mermaid→PNG rendering so images/ exists."
         )
 
     # Configure Manim for this render only.
@@ -365,6 +523,13 @@ def assemble_with_manim(
     fps: int = 30,
     background_color: Tuple[int, int, int] = (18, 18, 38),
     use_manim_audio: bool = False,
+    # Timing configuration from settings.yaml
+    title_reveal_ratio: float = 0.12,
+    content_reveal_ratio: float = 0.25,
+    hold_ratio: float = 0.50,
+    exit_ratio: float = 0.13,
+    min_step_time: float = 0.4,
+    max_step_time: float = 1.2,
 ) -> Optional[Path]:
     """High-level helper to build an animated short using Manim per section.
 
@@ -425,6 +590,8 @@ def assemble_with_manim(
             print(f"[Manim] Skip section {i}: missing both Mermaid spec and image")
             continue
 
+        section_heading = _section.get("heading", f"Section {i}")
+
         print(f"[Manim] Rendering animated section {i} ({duration:.2f}s)...")
         section_video_path = _render_section_with_manim(
             image_path=img_path,
@@ -435,6 +602,13 @@ def assemble_with_manim(
             background_color=background_color,
             section_index=i,
             mmd_path=mmd_path if mmd_dir.exists() else None,
+            section_heading=section_heading,
+            title_reveal_ratio=title_reveal_ratio,
+            content_reveal_ratio=content_reveal_ratio,
+            hold_ratio=hold_ratio,
+            exit_ratio=exit_ratio,
+            min_step_time=min_step_time,
+            max_step_time=max_step_time,
         )
 
         vclip = VideoFileClip(str(section_video_path))
