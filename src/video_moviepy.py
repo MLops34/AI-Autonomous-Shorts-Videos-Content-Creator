@@ -35,6 +35,32 @@ except ImportError:
 # Default transition durations (seconds) — synced with diagram/script changes
 DEFAULT_FADE_IN = 0.4
 DEFAULT_FADE_OUT = 0.3
+DEFAULT_CROSSFADE = 0.15  # overlap between sections
+
+
+def _calculate_safe_fade_durations(
+    duration: float,
+    fade_in: float = DEFAULT_FADE_IN,
+    fade_out: float = DEFAULT_FADE_OUT,
+    min_visible: float = 0.5,  # minimum time content is fully visible
+) -> tuple[float, float]:
+    """Calculate fade durations that don't exceed audio duration.
+    
+    Ensures content is visible for at least min_visible seconds.
+    Returns (adjusted_fade_in, adjusted_fade_out).
+    """
+    total_fade_budget = duration - min_visible
+    if total_fade_budget <= 0:
+        # Extremely short clip: minimal fades
+        return (0.05, 0.05)
+    
+    # Scale fades proportionally if they exceed budget
+    requested_total = fade_in + fade_out
+    if requested_total > total_fade_budget:
+        scale = total_fade_budget / requested_total
+        return (fade_in * scale, fade_out * scale)
+    
+    return (fade_in, fade_out)
 
 
 def assemble_vertical_short(
@@ -127,8 +153,10 @@ def assemble_vertical_short(
 
             # Transitions synced with script: diagram fades in (arrow/box appear), then fades out to next
             bg = list(background_color)
-            fade_in = max(0.05, min(fade_in_duration, duration * 0.25))
-            fade_out = max(0.05, min(fade_out_duration, duration * 0.25))
+            # Use safe fade calculation to ensure audio sync
+            fade_in, fade_out = _calculate_safe_fade_durations(
+                duration, fade_in_duration, fade_out_duration
+            )
             img_clip = img_clip.fx(fadein, fade_in, initial_color=bg)
             img_clip = img_clip.fx(fadeout, fade_out, final_color=bg)
 
