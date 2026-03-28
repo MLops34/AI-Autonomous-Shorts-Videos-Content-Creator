@@ -20,8 +20,8 @@ Examples (from project root):
   # Manim-only pipeline from a topic (writes to outputs_manim/)
   python run_manim_only.py "how database indexes work"
 
-  # Use a specific OpenRouter model and TTS voice
-  python run_manim_only.py "rag explained" --model "deepseek/deepseek-r1-0528:free" --voice "en-US-GuyNeural"
+  # Default uses Gemini 2.5 Flash (set GEMINI_API_KEY). Optional: OpenRouter model + voice
+  python run_manim_only.py "rag explained" --model "deepseek/deepseek-chat:free" --voice "en-US-GuyNeural"
 
   # Render from an existing normal run (copies into outputs_manim/ first)
   python run_manim_only.py outputs\\2026-02-25_190728_explain_about_rag_tech
@@ -110,10 +110,12 @@ async def _build_assets_for_topic(run_dir: Path, topic: str, model: str, voice: 
     for i, section in enumerate(script_data["sections"], 1):
         heading = section.get("heading", "")
         text = section.get("text", section.get("narration", ""))
+        duration_sec = section.get("duration_sec", 10.0)
         prompt = (
             mermaid_tmpl.replace("{{heading}}", heading)
             .replace("{{text}}", text)
             .replace("{{NARRATION}}", text)
+            .replace("{{duration_sec}}", str(duration_sec))
         )
 
         diagram_code = query_ollama(prompt, model=model).strip()
@@ -166,7 +168,7 @@ async def main_async() -> int:
         "--model",
         type=str,
         default=DEFAULT_MODEL,
-        help="OpenRouter model id (used for script + Mermaid generation).",
+        help="LLM model id (default: deepseek/deepseek-chat on OpenRouter; 404s try fallbacks). Set OPENROUTER_MODEL / OPENROUTER_MODEL_FALLBACKS in .env.",
     )
     parser.add_argument(
         "--voice",
