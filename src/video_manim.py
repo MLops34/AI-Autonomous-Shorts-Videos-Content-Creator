@@ -1,4 +1,5 @@
-"""Experimental Manim-based video assembly for animated sections.
+"""
+Experimental Manim-based video assembly for animated sections.
 
 This module reuses the existing pipeline outputs:
 - Mermaid-rendered section images:  images/section_01.png, section_02.png, ...
@@ -19,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 import json
 import re
+import textwrap
 
 from moviepy.editor import (  # type: ignore[import-not-found]
     AudioFileClip,
@@ -43,6 +45,8 @@ try:
         GrowArrow,
         DOWN,
         UP,
+        LEFT,
+        RIGHT,
         ORIGIN,
         WHITE,
         config,
@@ -54,13 +58,99 @@ except ImportError as e:  # pragma: no cover - runtime environment dependent
     ImageMobject = object  # type: ignore[assignment]
     FadeIn = FadeOut = None  # type: ignore[assignment]
     VGroup = Rectangle = RoundedRectangle = Arrow = Text = Create = GrowFromCenter = GrowArrow = object  # type: ignore[assignment]
-    DOWN = UP = ORIGIN = WHITE = None  # type: ignore[assignment]
+    DOWN = UP = LEFT = RIGHT = ORIGIN = WHITE = None  # type: ignore[assignment]
     config = None  # type: ignore[assignment]
     tempconfig = None  # type: ignore[assignment]
     smooth = ease_out_sine = ease_in_out_sine = None  # type: ignore[assignment]
     _MANIM_IMPORT_ERROR = e
 else:
     _MANIM_IMPORT_ERROR = None
+
+# Graph scene palette (readable on dark vertical shorts)
+_ARROW_VIS = "#4FC3FF"
+_NODE_FILL = "#152B45"
+_NODE_STROKE = "#7EB6FF"
+_NODE_TEXT = "#F5F9FF"
+_NODE_TEXT_STROKE = "#071018"
+
+
+def _wrap_mermaid_label(raw: str, chars_per_line: int = 16, max_lines: int = 2) -> str:
+    """Break long Mermaid labels into 1–2 lines so boxes stay legible on phone."""
+    t = " ".join((raw or "").split()).strip()
+    if not t:
+        return "·"
+    if len(t) <= chars_per_line and "\n" not in t:
+        return t
+    lines = textwrap.wrap(
+        t.replace("\n", " "),
+        width=chars_per_line,
+        break_long_words=True,
+        break_on_hyphens=True,
+    )
+    if not lines:
+        return t[: chars_per_line + 1] + "…"
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    trimmed = lines[:max_lines]
+    trimmed[-1] = trimmed[-1][: max(1, chars_per_line - 1)].rstrip() + "…"
+    return "\n".join(trimmed)
+
+
+def _build_node_card(
+    label: str,
+    font_size: int,
+    chars_per_line: int,
+) -> "VGroup":
+    """Rounded card + multiline text sized to the label."""
+    _require_manim()
+    wrapped = _wrap_mermaid_label(label, chars_per_line=chars_per_line, max_lines=2)
+    try:
+        txt = Text(
+            wrapped,
+            font_size=font_size,
+            line_spacing=0.52,
+            color=_NODE_TEXT,
+            stroke_width=1.5,
+            stroke_color=_NODE_TEXT_STROKE,
+            disable_ligatures=True,
+        )
+    except TypeError:
+        txt = Text(
+            wrapped,
+            font_size=font_size,
+            line_spacing=0.52,
+            color=_NODE_TEXT,
+            stroke_width=1.5,
+            stroke_color=_NODE_TEXT_STROKE,
+        )
+    pad_x, pad_y = 0.58, 0.46
+    box_w = min(6.4, max(2.35, float(txt.width) + pad_x))
+    box_h = max(0.88, float(txt.height) + pad_y)
+    box = RoundedRectangle(
+        width=box_w,
+        height=box_h,
+        corner_radius=min(0.22, box_h * 0.18),
+    )
+    box.set_fill(_NODE_FILL, opacity=1.0)
+    box.set_stroke(_NODE_STROKE, width=3.5, opacity=1.0)
+    txt.move_to(box.get_center())
+    return VGroup(box, txt)
+
+
+def _flow_arrow(start, end, horizontal: bool) -> "Arrow":
+    """Thick, high-contrast arrow with padding so tips do not sit inside the cards."""
+    buff = 0.2 if horizontal else 0.26
+    common: dict = {
+        "stroke_width": 9,
+        "color": _ARROW_VIS,
+        "buff": buff,
+    }
+    try:
+        return Arrow(
+            start, end, max_tip_length_to_length_ratio=0.22, **common
+        )  # type: ignore[call-arg]
+    except TypeError:
+        return Arrow(start, end, **common)
 
 
 def _require_manim() -> None:
@@ -89,14 +179,17 @@ def _load_sections(script_path: Path) -> List[Dict]:
     return data.get("sections", [])
 
 
-def _parse_mermaid_graph(mmd_path: Path) -> Optional[Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]]:
-    """Parse a simple Mermaid graph (graph TD/LR) into nodes and edges.
+def _parse_mermaid_graph(
+    mmd_path: Path,
+) -> Optional[Tuple[List[Tuple[str, str]], List[Tuple[str, str]], str]]:
+    """Parse a simple Mermaid graph (graph TD/LR) into nodes, edges, and layout.
+
+    Returns ``(nodes, edges, layout)`` where layout is ``\"TD\"`` (vertical) or ``\"LR\"``
+    (horizontal) from the diagram declaration. Manim uses this to match Mermaid flow.
 
     Supports:
-        graph TD
+        graph TD / graph LR / flowchart TD / flowchart LR
             A[Start] --> B[Next]
-            B --> C[End]
-            A --> B --> C  (chained arrows)
         Ignores classDiagram, subgraph, etc.
     """
     if not mmd_path.exists():
@@ -108,8 +201,13 @@ def _parse_mermaid_graph(mmd_path: Path) -> Optional[Tuple[List[Tuple[str, str]]
         return None
 
     first = lines[0].lower()
-    if not first.startswith("graph"):
+    if not (first.startswith("graph") or first.startswith("flowchart")):
         return None
+
+    layout = "TD"
+    parts = lines[0].strip().lower().split()
+    if len(parts) >= 2 and parts[1] in ("lr", "rl"):
+        layout = "LR"
 
     node_labels: Dict[str, str] = {}
     edges: List[Tuple[str, str]] = []
@@ -179,7 +277,7 @@ def _parse_mermaid_graph(mmd_path: Path) -> Optional[Tuple[List[Tuple[str, str]]
             ordered.append(nid)
 
     nodes = [(nid, node_labels[nid]) for nid in ordered]
-    return nodes, edges
+    return nodes, edges, layout
 
 
 def _build_section_scene_class(
@@ -265,7 +363,7 @@ def _build_graph_scene_class(
     duration: float,
     background_color: Tuple[float, float, float] = (0.07, 0.07, 0.15),
     section_heading: str = "",
-    # Timing configuration from settings.yaml
+    layout: str = "TD",
     title_reveal_ratio: float = 0.12,
     content_reveal_ratio: float = 0.25,
     hold_ratio: float = 0.50,
@@ -273,38 +371,28 @@ def _build_graph_scene_class(
     min_step_time: float = 0.3,
     max_step_time: float = 0.8,
 ) -> type:
-    """Build a Manim Scene: section title, bold node boxes, clear arrows, smooth transitions.
-    
-    CRITICAL: Total animation time MUST equal audio duration exactly.
-    Animation sequence: title reveal → node/arrow builds → hold → fade out
+    """Build a Manim Scene: title → graph build → readable hold → fade out.
+
+    Reserves part of the clip for a **hold** so the full diagram is on screen with the
+    voiceover (avoids everything feeling rushed). ``layout`` matches Mermaid TD vs LR.
     """
     _require_manim()
 
-    # Fixed timing for title and exit (these don't depend on node count)
-    title_fade_time = min(0.4, max(0.2, duration * 0.06))
-    fade_out_time = min(0.6, max(0.25, duration * 0.1))
-    
-    # Calculate available time for node/arrow animations
-    available_for_build = duration - title_fade_time - fade_out_time
-    
-    # Calculate per-element timing based on number of animated elements
+    horizontal = layout.upper() == "LR"
+
+    title_fade_time = min(0.5, max(0.22, duration * max(0.08, title_reveal_ratio)))
+    fade_out_time = min(0.65, max(0.26, duration * max(0.09, exit_ratio)))
+    mid = max(0.05, duration - title_fade_time - fade_out_time)
     num_nodes = len(nodes)
     num_edges = len(edges)
-    total_elements = num_nodes + num_edges
-    
-    if total_elements == 0:
-        build_time = 0
-        hold_time = available_for_build
-    else:
-        # Each element gets fair share, but clamped to min/max
-        per_element_time = available_for_build / total_elements
-        per_element_time = max(min_step_time, min(max_step_time, per_element_time))
-        
-        # Recalculate build time with clamped per-element time
-        build_time = per_element_time * total_elements
-        hold_time = available_for_build - build_time
-        hold_time = max(0.05, hold_time)  # At least a tiny hold
-    
+    total_elements = max(1, num_nodes + num_edges)
+    # Spend ~65% of mid on reveals; remaining time is padded with wait() so clip == audio.
+    build_budget = mid * (1.0 - min(0.35, max(0.12, hold_ratio * 0.25)))
+    per_element_time = max(
+        min_step_time,
+        min(max_step_time, build_budget / total_elements),
+    )
+
     heading = (section_heading or "Section").strip()[:60]
 
     class GraphScene(Scene):  # type: ignore[misc]
@@ -314,30 +402,26 @@ def _build_graph_scene_class(
             except Exception:
                 pass
 
-            # Title fades in (not instant)
-            title = Text(heading, font_size=42, color=WHITE).to_edge(UP, buff=0.35)
+            try:
+                title = Text(
+                    heading,
+                    font_size=46,
+                    color=WHITE,
+                    stroke_width=2.4,
+                    stroke_color=_NODE_TEXT_STROKE,
+                ).to_edge(UP, buff=0.3)
+            except TypeError:
+                title = Text(heading, font_size=46, color=WHITE).to_edge(UP, buff=0.3)
             self.play(FadeIn(title), run_time=title_fade_time, rate_func=ease_out_sine)
 
-            # Node boxes: bold stroke, visible fill so boxes are unmistakable
+            n_n = len(nodes)
+            font_size = 32 if n_n <= 4 else 28 if n_n <= 6 else 25
+            line_chars = 15 if font_size <= 28 else 16
+
             node_groups: Dict[str, VGroup] = {}
             node_mobs: List[VGroup] = []
-            max_label_len = max(len(label) for _, label in nodes) if nodes else 10
-            box_width = min(5.8, max(4.2, 3.5 + max_label_len * 0.07))
-            box_height = 1.35
-
             for node_id, label in nodes:
-                box = RoundedRectangle(
-                    width=box_width,
-                    height=box_height,
-                    corner_radius=0.3,
-                )
-                box.set_fill(color=WHITE, opacity=0.3)
-                box.set_stroke(color=WHITE, width=5)
-                text = Text(label, font_size=34, line_spacing=0.9, color=WHITE)
-                if text.width > box_width - 0.5:
-                    text.scale_to_fit_width(box_width - 0.5)
-                text.move_to(box.get_center())
-                group = VGroup(box, text)
+                group = _build_node_card(label, font_size=font_size, chars_per_line=line_chars)
                 node_groups[node_id] = group
                 node_mobs.append(group)
 
@@ -345,25 +429,29 @@ def _build_graph_scene_class(
                 self.play(FadeOut(title), run_time=fade_out_time)
                 return
 
-            flow = VGroup(*node_mobs).arrange(DOWN, buff=0.55)
-            flow.next_to(title, DOWN, buff=0.4)
-            max_flow_height = 5.4
-            if flow.height > max_flow_height:
-                flow.scale(max_flow_height / flow.height)
-                flow.next_to(title, DOWN, buff=0.4)
+            if horizontal:
+                flow = VGroup(*node_mobs).arrange(RIGHT, buff=0.5)
+                flow.next_to(title, DOWN, buff=0.42)
+                max_span = 6.72
+                if flow.width > max_span:
+                    flow.scale(max_span / flow.width)
+                    flow.next_to(title, DOWN, buff=0.42)
+            else:
+                flow = VGroup(*node_mobs).arrange(DOWN, buff=0.58)
+                flow.next_to(title, DOWN, buff=0.42)
+                max_flow_height = 5.65
+                if flow.height > max_flow_height:
+                    flow.scale(max_flow_height / flow.height)
+                    flow.next_to(title, DOWN, buff=0.42)
 
-            # Add flow so nodes are positioned; hide all initially
             for g in flow:
                 g.set_opacity(0.0)
             self.add(flow)
 
             visible_nodes = set()
             arrows: List[Arrow] = []
+            element_time = per_element_time if (num_nodes + num_edges) > 0 else 0.45
 
-            # Calculate per-element animation time
-            element_time = per_element_time if total_elements > 0 else 0.5
-
-            # First node: grow in
             if nodes:
                 first_group = node_groups[nodes[0][0]]
                 first_group.set_opacity(1.0)
@@ -374,45 +462,47 @@ def _build_graph_scene_class(
                 )
                 visible_nodes.add(nodes[0][0])
 
-            # Animate edges and subsequent nodes
             for src_id, dst_id in edges:
                 if src_id == dst_id:
                     continue
                 if src_id not in node_groups or dst_id not in node_groups:
                     continue
-                src = node_groups[src_id]
-                dst = node_groups[dst_id]
-
-                arrow = Arrow(
-                    src.get_bottom(),
-                    dst.get_top(),
-                    buff=0.2,
-                )
-                arrow.set_color(WHITE)
-                arrow.set_stroke(color=WHITE, width=6)
+                src_m = node_groups[src_id]
+                dst_m = node_groups[dst_id]
+                if horizontal:
+                    arrow = _flow_arrow(src_m.get_right(), dst_m.get_left(), True)
+                else:
+                    arrow = _flow_arrow(src_m.get_bottom(), dst_m.get_top(), False)
+                try:
+                    arrow.set_z_index(5)
+                except Exception:
+                    pass
                 arrows.append(arrow)
 
-                # Arrow grows
                 self.play(
                     GrowArrow(arrow),
-                    run_time=element_time * 0.6,
+                    run_time=element_time * 0.58,
                     rate_func=smooth,
                 )
 
-                # Destination node fades in
                 if dst_id not in visible_nodes:
                     self.play(
-                        FadeIn(dst),
-                        run_time=element_time * 0.4,
+                        FadeIn(dst_m),
+                        run_time=element_time * 0.42,
                         rate_func=ease_out_sine,
                     )
                     visible_nodes.add(dst_id)
 
-            # Hold before exit
-            if hold_time > 0:
-                self.wait(hold_time)
+            r = getattr(self, "renderer", None)
+            elapsed = 0.0
+            if r is not None:
+                elapsed = float(getattr(r, "time", 0.0))
+            if elapsed <= 0.0:
+                elapsed = float(getattr(self, "time", 0.0))
+            pad = duration - fade_out_time - elapsed
+            if pad > 0.02:
+                self.wait(pad)
 
-            # Exit: fade everything together
             all_content = VGroup(flow, *arrows)
             self.play(
                 FadeOut(all_content),
@@ -450,11 +540,10 @@ def _render_section_with_manim(
     heading = section_heading or f"Section {section_index}"
 
     scene_cls: type
-    parsed_graph: Optional[Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]] = None
+    parsed_graph: Optional[Tuple[List[Tuple[str, str]], List[Tuple[str, str]], str]] = None
     if mmd_path is not None and mmd_path.exists():
         parsed_graph = _parse_mermaid_graph(mmd_path)
 
-    # Use graph only when we have a proper flowchart (2+ nodes, 1+ edge)
     use_graph = (
         parsed_graph is not None
         and len(parsed_graph[0]) >= 2
@@ -462,13 +551,14 @@ def _render_section_with_manim(
     )
 
     if use_graph:
-        nodes, edges = parsed_graph
+        nodes, edges, flow_layout = parsed_graph
         scene_cls = _build_graph_scene_class(
             nodes=nodes,
             edges=edges,
             duration=duration,
             background_color=bg_float,  # type: ignore[arg-type]
             section_heading=heading,
+            layout=flow_layout,
             title_reveal_ratio=title_reveal_ratio,
             content_reveal_ratio=content_reveal_ratio,
             hold_ratio=hold_ratio,
@@ -629,8 +719,10 @@ def assemble_with_manim(
         fps=fps,
         codec="libx264",
         audio_codec="aac",
+        audio_bitrate="192k",
         threads=4,
-        preset="medium",
+        preset="slow",
+        ffmpeg_params=["-crf", "20"],
         logger=None,
     )
 
