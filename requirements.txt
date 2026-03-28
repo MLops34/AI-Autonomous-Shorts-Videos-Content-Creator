@@ -8,8 +8,11 @@ edge-tts>=6.1.12
 pyyaml>=6.0                     # Read settings.yaml and prompts
 pydantic>=2.5.0                 # Parse LLM JSON outputs safely (script sections)
 
-# HTTP client for OpenRouter / DeepSeek
+# HTTP client for OpenRouter (default: DeepSeek — set OPENROUTER_API_KEY in .env)
 requests>=2.31.0
+
+# Google Gemini (optional — set GEMINI_API_KEY when using a gemini-* model id)
+google-genai>=1.0.0
 
 # Nice-to-have utilities
 tqdm>=4.66.1                    # Progress bars during rendering/TTS
