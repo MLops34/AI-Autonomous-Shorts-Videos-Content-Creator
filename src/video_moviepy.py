@@ -151,6 +151,14 @@ def assemble_vertical_short(
                 pos="center"
             )
 
+            # Gentle Ken Burns zoom (settings.yaml zoom_factor) — was unused before
+            if zoom_factor and float(zoom_factor) > 0 and duration > 0.4:
+                zf = float(zoom_factor)
+                try:
+                    img_clip = img_clip.resize(lambda t: 1.0 + zf * (t / max(duration, 0.01)))
+                except Exception:
+                    pass
+
             # Transitions synced with script: diagram fades in (arrow/box appear), then fades out to next
             bg = list(background_color)
             # Use safe fade calculation to ensure audio sync
@@ -185,9 +193,11 @@ def assemble_vertical_short(
         fps=fps,
         codec="libx264",
         audio_codec="aac",
+        audio_bitrate="192k",
         threads=4,
-        preset="medium",
-        logger=None
+        preset="slow",
+        ffmpeg_params=["-crf", "20"],
+        logger=None,
     )
 
     print(f"Video ready: {output_path}")
