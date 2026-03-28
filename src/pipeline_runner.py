@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 
-from .ollama_client import generate_script, query_ollama
+from .ollama_client import DEFAULT_MODEL, generate_script, query_ollama
 from .mermaid_renderer import render_all_mmd_to_png, ensure_mermaid_has_diagram_type
 from .tts_edge import generate_section_audios
 from .video_moviepy import assemble_vertical_short
@@ -41,7 +41,7 @@ async def run_short_creation(
     topic: str,
     config_folder: Path = Path("config"),
     outputs_base: Path = Path("outputs"),
-    model: str = "deepseek/deepseek-chat",
+    model: str = DEFAULT_MODEL,
 ):
     # ── Create safe, unique output folder ────────────────────────────────
     safe_topic = re.sub(r"[^a-zA-Z0-9_-]", "_", topic.strip().lower())
@@ -137,7 +137,8 @@ async def run_short_creation(
             images_folder=images_folder,
             audio_folder=audio_folder,
             output_path=final_video_path,
-            sections=script_data["sections"],  # for timing / text overlays later
+            sections=script_data["sections"],
+            zoom_factor=0.025,
         )
 
         logger.info("MoviePy short completed: %s", final_video_path)
