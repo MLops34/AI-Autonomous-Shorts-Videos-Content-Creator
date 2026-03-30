@@ -107,8 +107,8 @@ def render_all_mmd_to_png(
     output_dir: Path,
     theme: str = "dark",
     background: str = "transparent",
-    width: int = 1080,
-    scale: float = 2.0
+    width: int = 1200,
+    scale: float = 2.5,
 ) -> List[Path]:
     """
     Render all .mmd files to PNG using mermaid-cli.
